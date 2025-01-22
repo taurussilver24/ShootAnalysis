@@ -10,7 +10,7 @@ This project utilizes a YOLO object detection model to analyze a Basketball vide
 **File Directory Structure**
 
 ```
-root_dir
+ShootAnalysis
 ├── Yolo-Weights
 │   ├── best.pt
 │   └── best6.pt
@@ -73,15 +73,34 @@ The current model result is not even close to the ideal results, so the utmost p
 **ファイルディレクトリ構成**
 
 ```
-root_dir
-├── Yolo-Weights
-│   ├── best.pt
-│   └── best6.pt
+├── .dvcignore
+├── .gitignore
 ├── config.yaml
+├── cvat.yaml
+├── getContents.py
 ├── HoopVids
-│   ├── DNvsTW.mp4
-└── shot_detector.py
-└── shot_results.csv
+    ├── .filen.trash.local
+    ├── Done_Requested
+├── HoopVids.dvc
+├── models
+    ├── 1220v1.pt
+├── Programs
+    ├── clearGPUCache.py
+    ├── csv_gen.py
+    ├── main.py
+    ├── ROC_curve_create.py
+    ├── ROC_curve_create_case2.py
+    ├── shot_detector.py
+    ├── shot_detector_manual.py
+    ├── shot_detector_test.py
+    ├── utils.py
+    ├── __pycache__
+        ├── utils.cpython-312.pyc
+├── README.md
+├── requirements.txt
+├── Results
+├── runs
+├── Yolo-Weights
 ```
 
 **実行手順**

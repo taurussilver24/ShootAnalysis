@@ -11,7 +11,7 @@ class ShotDetector:
     def __init__(self, model_path, video_path, video_name):
         # Load YOLO model
         self.model = YOLO(model_path)
-        self.class_names = ['Ball', 'Hoop']
+        self.class_names = ['Ring', 'Ball']
 
         # Use video
         self.cap = cv2.VideoCapture(video_path)
@@ -227,4 +227,4 @@ if __name__ == "__main__":
     parser.add_argument('--video', type=str, default="HoopVids/DNvsTW.mp4", help="Path to video")
     args = parser.parse_args()
 
-    ShotDetector(model_path="Yolo-Weights/" + args.model, video_path="HoopVids/" + args.video, video_name=args.video)
+    ShotDetector(model_path="models/" + args.model, video_path="HoopVids/Done_Requested/" + args.video, video_name=args.video)

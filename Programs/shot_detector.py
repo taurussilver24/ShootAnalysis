@@ -233,5 +233,5 @@ if __name__ == "__main__":
     parser.add_argument('--video', type=str, default="HoopVids/Done_Requested/DNvsTW.mp4", help="動画のパス")
     args = parser.parse_args()
 
-    ShotDetector(model_path="Yolo-Weights/" + args.model, video_path="HoopVids/Done_Requested/" + args.video,
+    ShotDetector(model_path="models/" + args.model, video_path="HoopVids/Done_Requested/" + args.video,
                  video_name=args.video)

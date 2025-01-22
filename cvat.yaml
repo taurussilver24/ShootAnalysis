@@ -1,0 +1,7 @@
+train: RishitDataset/DS/train/images
+val: RishitDataset/DS/val/images
+#test: YOLOTrain8/test/images
+
+
+nc: 2
+names: ['Ring', 'Ball']

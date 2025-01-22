@@ -1,0 +1,7 @@
+train: ShimodaYOLO/train/images
+val: ShimodaYOLO/valid/images
+#test: YOLOTrain8/test/images
+
+
+nc: 2
+names: ['Hoop', 'Ball']

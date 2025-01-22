@@ -1,0 +1,19 @@
+# Object Detection Requirements
+
+cvzone
+ultralytics
+hydra-core
+matplotlib
+numpy
+opencv-python
+Pillow
+PyYAML
+requests
+scipy
+torch
+torchvision
+tqdm
+filterpy
+scikit-image
+pandas
+scikit-learn

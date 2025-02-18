@@ -15,8 +15,9 @@
 ├── config.yaml
 ├── cvat.yaml
 ├── getContents.py
+├── Results
+    ├── {動画名}
 ├── HoopVids
-    ├── .filen.trash.local
     ├── Done_Requested
 ├── HoopVids.dvc
 ├── models
@@ -31,13 +32,8 @@
     ├── shot_detector_manual.py
     ├── shot_detector_test.py
     ├── utils.py
-    ├── __pycache__
-        ├── utils.cpython-312.pyc
 ├── README.md
 ├── requirements.txt
-├── Results
-├── runs
-├── Yolo-Weights
 ```
 
 **実行手順**

@@ -75,7 +75,7 @@ class ShotDetector:
                     break
 
             self.frame = cv2.resize(self.frame, (1280, 720))
-            results = self.model(self.frame, stream=True)
+            results = self.model(self.frame, stream=True, verbose=False)
 
             for r in results:
                 boxes = r.boxes
@@ -126,7 +126,7 @@ class ShotDetector:
                             cvzone.cornerRect(self.frame, (x1, y1, w, h))
 
                         # 高信頼度の場合にフープポイントを作成
-                        if current_class == "Hoop" and conf > 0.3:
+                        if current_class == "Ring" and conf > 0.3:
                             self.hoop_pos.append((center, self.frame_count, w, h, conf))
                             cvzone.cornerRect(self.frame, (x1, y1, w, h))
 
@@ -210,6 +210,7 @@ class ShotDetector:
                 hoop_center = self.hoop_pos[-1][0]
                 current_score = f"{self.makes} / {self.attempts}"
                 video_timing_seconds = self.frame_count / self.fps
+                print(f"Shot detected: {self.attempts}, Result: {result}")
                 self.csv_writer.writerow([self.attempts, result, ball_center,
                                           hoop_center, current_score, video_timing_seconds])
 

@@ -21,7 +21,8 @@
     ├── Done_Requested
 ├── HoopVids.dvc
 ├── models
-    ├── 1220v1.pt
+    ├── Rishit.pt
+    ├── RokkenV2.pt
 ├── ExtraPrograms
     ├── clearGPUCache.py
     ├── csv_gen.py
@@ -61,5 +62,10 @@
     - ビデオフレームの処理
     - オブジェクト (バスケットボールとリング) の検出
     - シュート
+- YOLOモデル詳細（H100 GPU)
+    - `Rishit.pt` は個人で用意したデータセットを使用し、学習された最新モデル
+    - `RokkenV2.pt`はRokkenから頂いたデータセットを使用し、学習された最新モデル
+- `shot_detector_test.py` と `shot_detector_manual.py` はテスト用プログラムです。
+- `ExtraPrograms`フォルダの全プログラムは実験用です。
 - `HoopVids` フォルダ　ダウンロードリンク
     - https://drive.google.com/drive/folders/1lu7VW9lMlcXZ4Bv4TYhLCEHk1VOiPKc9?usp=sharing

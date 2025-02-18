@@ -22,12 +22,13 @@
 ├── HoopVids.dvc
 ├── models
     ├── 1220v1.pt
-├── Programs
+├── ExtraPrograms
     ├── clearGPUCache.py
     ├── csv_gen.py
-    ├── main.py
     ├── ROC_curve_create.py
     ├── ROC_curve_create_case2.py
+├── Programs
+    ├── main.py
     ├── shot_detector.py
     ├── shot_detector_manual.py
     ├── shot_detector_test.py
@@ -48,7 +49,7 @@
 
 **前提条件:** `requirements.txt` に記載されているライブラリをインストールしてください。
 
-**実行:** `python shot_detector.py --model Yolo-Weights/best1.pt --video HoopVids/DNvsTW.mp4`
+**実行:** `python Programs/shot_detector.py --model best1.pt --video DNvsTW.mp4`
 
 **`best1.pt` と `DNvsTW.mp4` を、ご希望のモデルパスとビデオパスに置き換えてください。**
 

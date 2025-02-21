@@ -89,7 +89,7 @@ class ShotDetector:
                     conf = math.ceil((box.conf[0] * 100)) / 100
 
                     # 信頼度が0.75より大きい場合のみ続行
-                    if conf > 0.75:
+                    if conf > 0.55:
                         # クラス名
                         cls = int(box.cls[0])
                         current_class = self.class_names[cls]

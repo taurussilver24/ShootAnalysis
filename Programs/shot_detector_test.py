@@ -8,20 +8,21 @@ import csv
 from utils import score, detect_down, detect_up, in_hoop_region, clean_hoop_pos, clean_ball_pos
 
 class ShotDetector:
-    def __init__(self, model_path, video_path, video_name,model_name):
-        # main.pyから作成されたYOLOモデルをロード - 相対パスに変更
-        self.model = YOLO(model_path)
+    def __init__(self, model1_path, model2_path, video_path, video_name, model_name):
+        # Load YOLO models for each class
+        self.model_ball = YOLO(model1_path)  # Model for Ball (Class 2)
+        self.model_ring = YOLO(model2_path)  # Model for Ring (Class 1)
         self.class_names = ['Ring', 'Ball']
 
-        # ビデオを使用 - テキストをビデオパスに置き換え
+        # Initialize video capture
         self.cap = cv2.VideoCapture(video_path)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
         self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        self.fps = self.cap.get(cv2.CAP_PROP_FPS)  # フレーム毎秒
+        self.fps = self.cap.get(cv2.CAP_PROP_FPS)  # Frames per second
 
-        self.ball_pos = []  # タプルの配列 ((x_pos, y_pos), フレームカウント, 幅, 高さ, 信頼度)
-        self.hoop_pos = []  # タプルの配列 ((x_pos, y_pos), フレームカウント, 幅, 高さ, 信頼度)
+        self.ball_pos = []  # List of tuples: ((x_pos, y_pos), frame_count, width, height, confidence)
+        self.hoop_pos = []  # List of tuples: ((x_pos, y_pos), frame_count, width, height, confidence)
 
         self.frame_count = 0
         self.frame = None
@@ -29,19 +30,19 @@ class ShotDetector:
         self.makes = 0
         self.attempts = 0
 
-        # ショットを検出するために使用（上部および下部の領域）
+        # Shot detection flags
         self.up = False
         self.down = False
         self.peak = False
         self.up_frame = 0
         self.down_frame = 0
 
-        # メイク/ミス後の緑と赤の色を使用
+        # Fade effect for makes/misses
         self.fade_frames = 20
         self.fade_counter = 0
         self.overlay_color = (0, 0, 0)
 
-        # CSVファイルをライトモードで開き、ヘッダーを書き込む
+        # Create results directory and CSV file
         results_dir = 'Results/' + video_name
         os.makedirs(results_dir, exist_ok=True)
         self.csv_file = open(results_dir + '/' + model_name + '_shot_results.csv', mode='w', newline='')
@@ -49,11 +50,11 @@ class ShotDetector:
         self.csv_writer.writerow(["Shot Taken", "Result", "Ball Coordinates",
                                   "Hoop Coordinates", "Current Score", "Video Timing (seconds)"])
 
-        # ビデオの総時間を秒で計算
+        # Calculate total video time in seconds
         self.total_time_seconds = self.total_frames / self.fps
 
-        # ビデオとスライダーを表示するためのウィンドウを作成
-        self.window_name = "MODEL: " + model_path + "  VIDEO: " + video_path
+        # Create window with trackbar
+        self.window_name = "MODEL: " + model1_path + " & " + model2_path + "  VIDEO: " + video_path
         cv2.namedWindow(self.window_name)
         cv2.createTrackbar('Time (s)', self.window_name, 0, int(self.total_time_seconds), self.on_time_slider_change)
         self.paused = False
@@ -71,76 +72,61 @@ class ShotDetector:
             if not self.paused:
                 ret, self.frame = self.cap.read()
                 if not ret:
-                    # ビデオの終了またはエラーが発生
-                    break
+                    break  # End of video or error
 
             self.frame = cv2.resize(self.frame, (1280, 720))
-            results = self.model(self.frame, stream=True, verbose=False)
 
-            for r in results:
+            # Run inference for both models
+            results_ring = self.model_ring(self.frame, stream=True, verbose=False)  # Detect Ring (Class 1)
+            results_ball = self.model_ball(self.frame, stream=True, verbose=False)  # Detect Ball (Class 2)
+
+            # Process Ring detections
+            for r in results_ring:
                 boxes = r.boxes
                 for box in boxes:
-                    # バウンディングボックス
                     x1, y1, x2, y2 = box.xyxy[0]
                     x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
                     w, h = x2 - x1, y2 - y1
-
-                    # 信頼度
                     conf = math.ceil((box.conf[0] * 100)) / 100
+                    cls = int(box.cls[0])
 
-                    # 信頼度が0.75より大きい場合のみ続行
-                    if conf > 0.75:
-                        # クラス名
-                        cls = int(box.cls[0])
-                        current_class = self.class_names[cls]
-
+                    if conf > 0.60 and self.class_names[cls] == "Ring":
                         center = (int(x1 + w / 2), int(y1 + h / 2))
+                        self.hoop_pos.append((center, self.frame_count, w, h, conf))
+                        cv2.rectangle(self.frame, (x1, y1), (x2, y2), (255, 0, 0), 1)  # Blue for Ring
+                        label = f"Ring {conf:.2f}"
+                        cv2.putText(self.frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
 
-                        # 異なるクラスの色を定義
-                        if current_class == "Ball":
-                            color = (0, 0, 255)  # ボールの赤
-                        else:
-                            color = (255, 0, 0)  # フープの青
+            # Process Ball detections
+            for r in results_ball:
+                boxes = r.boxes
+                for box in boxes:
+                    x1, y1, x2, y2 = box.xyxy[0]
+                    x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+                    w, h = x2 - x1, y2 - y1
+                    conf = math.ceil((box.conf[0] * 100)) / 100
+                    cls = int(box.cls[0])
 
-                        # バウンディングボックスとラベルを描画
-                        cv2.rectangle(self.frame, (x1, y1), (x2, y2), color, 1)
-                        label = f"{current_class} {conf:.2f}"
+                    if conf > 0.60 and self.class_names[cls] == "Ball":
+                        center = (int(x1 + w / 2), int(y1 + h / 2))
+                        self.ball_pos.append((center, self.frame_count, w, h, conf))
+                        cv2.rectangle(self.frame, (x1, y1), (x2, y2), (0, 0, 255), 1)  # Red for Ball
+                        label = f"Ball {conf:.2f}"
+                        cv2.putText(self.frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
 
-                        # テキストサイズの判定
-                        (text_width, text_height), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
-
-                        # レクタングルの座標
-                        rect_x1 = x1
-                        rect_y1 = y1 - text_height - 10  # テキストが正しく配置されていない場合はこの値を調整
-                        rect_x2 = x1 + text_width
-                        rect_y2 = y1
-
-                        # レクタングルを描く
-                        cv2.rectangle(self.frame, (rect_x1, rect_y1), (rect_x2, rect_y2), (255, 255, 255), cv2.FILLED)
-                        cv2.putText(self.frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-
-                        # 高信頼度またはフープ近くの場合にのみボールポイントを作成
-                        if (current_class == "Ball" and conf > 0.3) or \
-                                (in_hoop_region(center, self.hoop_pos) and conf > 0.15):
-                            self.ball_pos.append((center, self.frame_count, w, h, conf))
-                            cvzone.cornerRect(self.frame, (x1, y1, w, h))
-
-                        # 高信頼度の場合にフープポイントを作成
-                        if current_class == "Ring" and conf > 0.3:
-                            self.hoop_pos.append((center, self.frame_count, w, h, conf))
-                            cvzone.cornerRect(self.frame, (x1, y1, w, h))
-
+            # Clean motion and detect shots
             self.clean_motion()
             self.shot_detection()
             self.frame_count += 1
 
-            # 時間スライダー位置を更新
+            # Update time slider
             current_time_seconds = self.frame_count / self.fps
             cv2.setTrackbarPos('Time (s)', self.window_name, int(current_time_seconds))
 
+            # Display frame
             cv2.imshow(self.window_name, self.frame)
 
-            # 'q'がクリックされた場合に閉じる
+            # Handle key presses
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
                 break
@@ -230,9 +216,10 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="YOLO8を使用し、ボールとリングの検出")
-    parser.add_argument('--model', type=str, default="Yolo-Weights/best6.pt", help="YOLOモデルのパス")
+    parser.add_argument('--modelB', type=str, default="RokkenV2.pt", help="YOLOモデル1のパス")
+    parser.add_argument('--modelR', type=str, default="Rishit.pt", help="YOLOモデル2のパス")
     parser.add_argument('--video', type=str, default="HoopVids/Done_Requested/DNvsTW.mp4", help="動画のパス")
     args = parser.parse_args()
 
-    ShotDetector(model_path="models/" + args.model, video_path="HoopVids/Done_Requested/" + args.video,
-                 video_name=args.video, model_name=args.model)
+    ShotDetector(model1_path="models/" + args.modelB,model2_path= "models/" + args.modelR, video_path="HoopVids/Done_Requested/" + args.video,
+                 video_name=args.video, model_name="Both")

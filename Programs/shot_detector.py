@@ -8,7 +8,7 @@ import csv
 from utils import score, detect_down, detect_up, in_hoop_region, clean_hoop_pos, clean_ball_pos
 
 class ShotDetector:
-    def __init__(self, model_path, video_path, video_name):
+    def __init__(self, model_path, video_path, video_name,model_name):
         # main.pyから作成されたYOLOモデルをロード - 相対パスに変更
         self.model = YOLO(model_path)
         self.class_names = ['Ring', 'Ball']
@@ -44,7 +44,7 @@ class ShotDetector:
         # CSVファイルをライトモードで開き、ヘッダーを書き込む
         results_dir = 'Results/' + video_name
         os.makedirs(results_dir, exist_ok=True)
-        self.csv_file = open(results_dir + '/shot_results.csv', mode='w', newline='')
+        self.csv_file = open(results_dir + '/' + model_name + '_shot_results.csv', mode='w', newline='')
         self.csv_writer = csv.writer(self.csv_file)
         self.csv_writer.writerow(["Shot Taken", "Result", "Ball Coordinates",
                                   "Hoop Coordinates", "Current Score", "Video Timing (seconds)"])
@@ -235,4 +235,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     ShotDetector(model_path="models/" + args.model, video_path="HoopVids/Done_Requested/" + args.video,
-                 video_name=args.video)
+                 video_name=args.video, model_name=args.model)

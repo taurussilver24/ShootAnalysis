@@ -73,7 +73,7 @@ class ShotDetector:
                     break
 
             self.frame = cv2.resize(self.frame, (1280, 720))
-            results = self.model(self.frame, stream=True)
+            results = self.model(self.frame, stream=True , verbose=False)
 
             for r in results:
                 boxes = r.boxes
@@ -123,7 +123,7 @@ class ShotDetector:
                             cvzone.cornerRect(self.frame, (x1, y1, w, h))
 
                         # Create hoop points only if confidence is high
-                        if current_class == "Hoop" and conf > 0.7:
+                        if current_class == "Ring" and conf > 0.7:
                             self.hoop_pos.append((center, self.frame_count, w, h, conf))
                             cvzone.cornerRect(self.frame, (x1, y1, w, h))
 
@@ -204,6 +204,7 @@ class ShotDetector:
         hoop_center = self.hoop_pos[-1][0] if self.hoop_pos else (0, 0)
         current_score = f"{self.makes} / {self.attempts}"
         video_timing_seconds = self.frame_count / self.fps
+        print(f"Shot detected: {self.attempts}, Result: {result}")
         self.csv_writer.writerow([self.attempts, result, ball_center, hoop_center, current_score, video_timing_seconds])
 
     def display_score(self):
@@ -223,8 +224,8 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Detect ball and hoop using YOLO8")
-    parser.add_argument('--model', type=str, default="Yolo-Weights/best6.pt", help="Path to YOLO model")
-    parser.add_argument('--video', type=str, default="HoopVids/DNvsTW.mp4", help="Path to video")
+    parser.add_argument('--model', type=str, default="RokkenV2.pt", help="Path to YOLO model")
+    parser.add_argument('--video', type=str, default="DNvsTW.mp4", help="Path to video")
     args = parser.parse_args()
 
     ShotDetector(model_path="models/" + args.model, video_path="HoopVids/Done_Requested/" + args.video, video_name=args.video)

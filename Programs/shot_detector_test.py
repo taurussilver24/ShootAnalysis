@@ -90,7 +90,7 @@ class ShotDetector:
                     conf = math.ceil((box.conf[0] * 100)) / 100
                     cls = int(box.cls[0])
 
-                    if conf > 0.60 and self.class_names[cls] == "Ring":
+                    if conf > 0.55 and self.class_names[cls] == "Ring":
                         center = (int(x1 + w / 2), int(y1 + h / 2))
                         self.hoop_pos.append((center, self.frame_count, w, h, conf))
                         cv2.rectangle(self.frame, (x1, y1), (x2, y2), (255, 0, 0), 1)  # Blue for Ring
@@ -107,7 +107,7 @@ class ShotDetector:
                     conf = math.ceil((box.conf[0] * 100)) / 100
                     cls = int(box.cls[0])
 
-                    if conf > 0.60 and self.class_names[cls] == "Ball":
+                    if conf > 0.55 and self.class_names[cls] == "Ball":
                         center = (int(x1 + w / 2), int(y1 + h / 2))
                         self.ball_pos.append((center, self.frame_count, w, h, conf))
                         cv2.rectangle(self.frame, (x1, y1), (x2, y2), (0, 0, 255), 1)  # Red for Ball

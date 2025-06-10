@@ -3,5 +3,9 @@
 /.idea
 /runs
 /Results
+/OLDResults
+/Analysis_Results
+/datasets
+/venv
 
 

@@ -12,11 +12,11 @@ class ShotDetector:
     def __init__(self, model_path, video_name, model_name):
         # Model initialization with accuracy-focused settings
         self.model = YOLO(model_path)
-        self.model.fuse()
+        # self.model.fuse()  #wont work with .onnx
         self.class_names = ['Ring', 'Ball']
 
         # Screen capture setup - ensure native 720p capture
-        self.target_width, self.target_height = 1280, 720
+        self.target_width, self.target_height = 1920, 1080
         self.capture_region = (0, 0, self.target_width, self.target_height)
         self.camera = dxcam.create(
             output_color="BGR",
@@ -238,7 +238,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Optimized basketball shot detector")
-    parser.add_argument('--model', type=str, default="models/Rishit.pt",
+    parser.add_argument('--model', type=str, default="models/Rishit.onnx",
                         help="YOLO model path")
     parser.add_argument('--name', type=str, default="NBA2K25.exe",
                         help="Session name for results folder")

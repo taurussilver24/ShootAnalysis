@@ -224,7 +224,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Detect ball and hoop using YOLO8")
-    parser.add_argument('--model', type=str, default="RokkenV2.pt", help="Path to YOLO model")
+    parser.add_argument('--model', type=str, default="Rishit.pt", help="Path to YOLO model")
     parser.add_argument('--video', type=str, default="DNvsTW.mp4", help="Path to video")
     args = parser.parse_args()
 

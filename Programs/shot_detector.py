@@ -1,259 +1,265 @@
 import os
-import math
-import csv
-import numpy as np
 import cv2
-import mss
-import psutil
-import win32gui
-import win32process
-from ultralytics import YOLO
 import cvzone
+import numpy as np
+import csv
+import time
+from ultralytics import YOLO
+# Assuming your 'utils.py' file is in the same directory or accessible
 from utils import score, detect_down, detect_up, in_hoop_region, clean_hoop_pos, clean_ball_pos
+import argparse
+
 
 class ShotDetector:
-    def __init__(self, model_path, process_name, model_name):
-        # Load YOLO model
-        self.model = YOLO(model_path)
+    def __init__(self, model_name, video_name):
+        """
+        Initializes the shot detector using only model and video filenames.
+        Paths are constructed automatically.
+        """
+        # --- Path Construction ---
+        self.model_path = os.path.join("models", model_name)
+        self.video_path = os.path.join("HoopVids", video_name)
+        video_basename = os.path.splitext(video_name)[0]
+        model_basename = os.path.splitext(model_name)[0]
+
+        # Model initialization
+        self.model = YOLO(self.model_path, task="detect")
         self.class_names = ['Ring', 'Ball']
 
-        # Try to get the window rect for the process name, retry a few times
-        self.monitor = self.get_window_rect_by_process_name(process_name)
-        if self.monitor is None:
-            raise RuntimeError(f"Could not find visible window for process '{process_name}'")
+        # --- Define Model Input Size (Corrected) ---
+        # We use dimensions that are a multiple of 32 to prevent warnings
+        self.model_input_width = 1280
+        self.model_input_height = 736  # <--- CHANGE: Was 720, now 736 to match stride 32
 
-        self.fps = 30  # Assumed FPS for timing calculations
-        self.total_frames = float('inf')  # No fixed frames, live capture
+        # Video capture setup
+        self.cap = cv2.VideoCapture(self.video_path)
+        if not self.cap.isOpened():
+            raise IOError(f"Error opening video file: {self.video_path}")
 
+        # Define Original Video Size
+        self.target_width = 1920
+        self.target_height = 1080
+        self.video_fps = self.cap.get(cv2.CAP_PROP_FPS)
+        if self.video_fps == 0: self.video_fps = 60
+
+        # --- FPS Counter Initialization ---
+        self.fps_start_time = time.time()
+        self.fps_frame_count = 0
+        self.display_fps = 0
+
+        # Detection buffers and state
+        self.frame_count = 0
         self.ball_pos = []
         self.hoop_pos = []
-
-        self.frame_count = 0
-        self.frame = None
-
         self.makes = 0
         self.attempts = 0
-
-        # Shot detection states
         self.up = False
         self.down = False
         self.peak = False
-        self.up_frame = 0
-        self.down_frame = 0
 
-        # Overlay fade effect parameters
+        # UI elements
         self.fade_frames = 20
         self.fade_counter = 0
         self.overlay_color = (0, 0, 0)
 
-        # Prepare results directory and CSV file for logging
-        results_dir = os.path.join('Results', model_name)
+        # --- Results Logging Setup ---
+        results_dir = os.path.join('Results', video_basename)
         os.makedirs(results_dir, exist_ok=True)
-        self.csv_file = open(os.path.join(results_dir, f'{model_name}_shot_results.csv'), mode='w', newline='')
+        csv_path = os.path.join(results_dir, f'{model_basename}_shot_results.csv')
+        self.csv_file = open(csv_path, mode='w', newline='')
         self.csv_writer = csv.writer(self.csv_file)
-        self.csv_writer.writerow(["Shot Taken", "Result", "Ball Coordinates",
-                                  "Hoop Coordinates", "Current Score", "Video Timing (seconds)"])
+        self.csv_writer.writerow([
+            "Shot Taken", "Result", "Ball Coordinates",
+            "Hoop Coordinates", "Current Score", "Video Timing (seconds)"
+        ])
 
-        # Window name for OpenCV display
-        self.window_name = f"MODEL: {os.path.basename(model_path)} | PROCESS: {process_name}"
-        cv2.namedWindow(self.window_name)
-        cv2.createTrackbar('Time (s)', self.window_name, 0, 100, self.on_time_slider_change)  # dummy slider for UI
-
+        # Window setup
+        self.window_name = f"MODEL: {model_name} | VIDEO: {video_name}"
+        cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(self.window_name, 1280, 720)  # Set a large initial window size
+        cv2.createTrackbar('Pause', self.window_name, 0, 1, self.on_pause_trackbar_change)
         self.paused = False
 
-        print("Press 'q' to quit, SPACE to pause/resume.")
         self.run()
 
-    def get_window_rect_by_process_name(self, process_name, max_attempts=5):
-        """
-        Finds the rectangle (left, top, width, height) of the first visible window
-        belonging to the given process name. Retries a few times if not found immediately.
-        """
-        for attempt in range(max_attempts):
-            # Get all PIDs matching process name
-            pids = [p.pid for p in psutil.process_iter(['name']) if p.info['name'] and p.info['name'].lower() == process_name.lower()]
-            if not pids:
-                print(f"[Attempt {attempt + 1}] No process found with name '{process_name}'. Retrying...")
-                cv2.waitKey(1000)
-                continue
-
-            hwnds = []
-            def enum_windows_callback(hwnd, hwnds):
-                try:
-                    _, pid = win32process.GetWindowThreadProcessId(hwnd)
-                    if pid in pids and win32gui.IsWindowVisible(hwnd):
-                        hwnds.append(hwnd)
-                except Exception:
-                    pass
-                return True
-
-            win32gui.EnumWindows(enum_windows_callback, hwnds)
-            if hwnds:
-                hwnd = hwnds[0]
-                left, top, right, bottom = win32gui.GetWindowRect(hwnd)
-                width, height = right - left, bottom - top
-                print(f"Found window for '{process_name}' at {(left, top, width, height)}")
-                return {"left": left, "top": top, "width": width, "height": height}
-
-            print(f"[Attempt {attempt + 1}] No visible window found for '{process_name}'. Retrying...")
-            cv2.waitKey(1000)
-
-        return None
-
-    def on_time_slider_change(self, pos):
-        # Dummy callback for trackbar, no real seeking in screen capture
-        pass
+    def on_pause_trackbar_change(self, pos):
+        self.paused = bool(pos)
 
     def run(self):
-        with mss.mss() as sct:
-            while True:
-                if not self.paused:
-                    try:
-                        # Capture the specified window region from screen
-                        screenshot = np.array(sct.grab(self.monitor))
-                        self.frame = cv2.cvtColor(screenshot, cv2.COLOR_BGRA2BGR)
-                    except Exception as e:
-                        print(f"Screen capture error: {e}")
-                        break
-
-                # Resize frame for consistent processing/display
-                self.frame = cv2.resize(self.frame, (1280, 720))
-
-                # Run YOLO model inference on frame
-                results = self.model(self.frame, stream=True, verbose=False)
-
-                # Process detections
-                for r in results:
-                    boxes = r.boxes
-                    for box in boxes:
-                        x1, y1, x2, y2 = box.xyxy[0]
-                        x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
-                        w, h = x2 - x1, y2 - y1
-                        conf = math.ceil(box.conf[0] * 100) / 100
-                        if conf < 0.55:
-                            continue
-
-                        cls = int(box.cls[0])
-                        current_class = self.class_names[cls]
-                        center = (x1 + w // 2, y1 + h // 2)
-                        color = (0, 0, 255) if current_class == "Ball" else (255, 0, 0)
-
-                        # Draw detection box and label
-                        cv2.rectangle(self.frame, (x1, y1), (x2, y2), color, 1)
-                        label = f"{current_class} {conf:.2f}"
-                        (text_w, text_h), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
-                        cv2.rectangle(self.frame, (x1, y1 - text_h - 10), (x1 + text_w, y1), (255, 255, 255), cv2.FILLED)
-                        cv2.putText(self.frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-
-                        # Append ball and hoop positions with confidence filtering
-                        if (current_class == "Ball" and conf > 0.3) or (in_hoop_region(center, self.hoop_pos) and conf > 0.15):
-                            self.ball_pos.append((center, self.frame_count, w, h, conf))
-                            cvzone.cornerRect(self.frame, (x1, y1, w, h))
-
-                        if current_class == "Ring" and conf > 0.3:
-                            self.hoop_pos.append((center, self.frame_count, w, h, conf))
-                            cvzone.cornerRect(self.frame, (x1, y1, w, h))
-
-                self.clean_motion()
-                self.shot_detection()
-                self.display_score()
-
-                self.frame_count += 1
-
-                # Display frame
-                cv2.imshow(self.window_name, self.frame)
-
-                key = cv2.waitKey(30) & 0xFF  # ~30 FPS update
-                if key == ord('q'):
-                    print("Quitting...")
+        while self.cap.isOpened():
+            if not self.paused:
+                ret, frame = self.cap.read()
+                if not ret:
+                    print("End of video reached.")
                     break
-                elif key == ord(' '):
-                    self.paused = not self.paused
-                    print("Paused" if self.paused else "Resumed")
 
-        # Cleanup
-        cv2.destroyAllWindows()
-        self.csv_file.close()
+                # Ensure original frame is 1080p for display
+                if frame.shape[1] != self.target_width or frame.shape[0] != self.target_height:
+                    frame = cv2.resize(frame, (self.target_width, self.target_height))
 
-    def clean_motion(self):
-        # Remove stale positions, smooth hoop pos
+                self.process_frame(frame)
+
+                # Calculate and display FPS and Resolution
+                self.update_fps()
+                self.draw_debug_info(frame)
+
+            cv2.imshow(self.window_name, frame)
+
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
+                break
+            elif key == ord(' '):
+                self.paused = not self.paused
+                cv2.setTrackbarPos('Pause', self.window_name, int(self.paused))
+
+        self.cleanup()
+
+    def draw_debug_info(self, frame):
+        """Draws FPS and resolution text on the top-left of the frame."""
+        # Define style
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.9
+        color = (0, 255, 0)
+        thickness = 2
+        bg_color = (0, 0, 0)
+
+        # Draw FPS
+        fps_text = f"Processing FPS: {self.display_fps:.2f}"
+        cv2.putText(frame, fps_text, (15, 35), font, font_scale, bg_color, thickness + 1, cv2.LINE_AA)
+        cv2.putText(frame, fps_text, (15, 35), font, font_scale, color, thickness, cv2.LINE_AA)
+
+        # Draw Resolution to prove it's Full HD
+        res_text = f"Display: {self.target_width}x{self.target_height}"
+        cv2.putText(frame, res_text, (15, 70), font, font_scale, bg_color, thickness + 1, cv2.LINE_AA)
+        cv2.putText(frame, res_text, (15, 70), font, font_scale, color, thickness, cv2.LINE_AA)
+
+    def update_fps(self):
+        """Calculates the processing frames per second."""
+        self.fps_frame_count += 1
+        elapsed_time = time.time() - self.fps_start_time
+        # Update every second
+        if elapsed_time > 1.0:
+            self.display_fps = self.fps_frame_count / elapsed_time
+            self.fps_frame_count = 0
+            self.fps_start_time = time.time()
+
+    def process_frame(self, frame):
+        # Resize the full HD frame to the size the model expects (736x1280)
+        model_frame = cv2.resize(frame, (self.model_input_width, self.model_input_height))
+
+        # Run detection on the resized frame
+        results = self.model(
+            model_frame,
+            stream=True,
+            verbose=False,
+            imgsz=(self.model_input_height, self.model_input_width),
+            half=True, device='0', conf=0.75
+        )
+
+        # Calculate scaling factors to map coordinates back to the original frame
+        scale_x = self.target_width / self.model_input_width
+        scale_y = self.target_height / self.model_input_height
+
+        for r in results:
+            boxes = r.boxes.cpu().numpy()
+            for box in boxes:
+                x1, y1, x2, y2 = box.xyxy[0]
+                x1_orig, y1_orig = int(x1 * scale_x), int(y1 * scale_y)
+                x2_orig, y2_orig = int(x2 * scale_x), int(y2 * scale_y)
+
+                w_orig, h_orig = x2_orig - x1_orig, y2_orig - y1_orig
+                conf = round(box.conf[0].item(), 2)
+                cls = int(box.cls[0])
+                current_class = self.class_names[cls]
+                center_orig = (x1_orig + w_orig // 2, y1_orig + h_orig // 2)
+
+                color = (0, 0, 255) if current_class == "Ball" else (255, 0, 0)
+                cv2.rectangle(frame, (x1_orig, y1_orig), (x2_orig, y2_orig), color, 2)
+
+                if current_class == "Ball":
+                    self.ball_pos.append((center_orig, self.frame_count, w_orig, h_orig, conf))
+                elif current_class == "Ring":
+                    self.hoop_pos.append((center_orig, self.frame_count, w_orig, h_orig, conf))
+
+        self.clean_motion(frame)
+        self.shot_detection()
+        self.display_score(frame)
+        self.frame_count += 1
+
+    def clean_motion(self, frame):
         self.ball_pos = clean_ball_pos(self.ball_pos, self.frame_count)
         if self.hoop_pos:
             self.hoop_pos = clean_hoop_pos(self.hoop_pos)
-            # Draw last hoop position on frame
-            cv2.circle(self.frame, self.hoop_pos[-1][0], 2, (128, 128, 0), 2)
-
-    def detect_peak(self, ball_pos):
-        if len(ball_pos) < 3:
-            return False
-        return ball_pos[-2][0][1] > ball_pos[-3][0][1] and ball_pos[-2][0][1] > ball_pos[-1][0][1]
+            cv2.circle(frame, self.hoop_pos[-1][0], 5, (0, 255, 255), -1)
 
     def shot_detection(self):
-        if not self.hoop_pos or not self.ball_pos:
-            return
+        if not self.hoop_pos or not self.ball_pos: return
 
-        # Detect upward ball movement
         if not self.up:
             self.up = detect_up(self.ball_pos, self.hoop_pos)
-            if self.up:
-                self.up_frame = self.ball_pos[-1][1]
+            if self.up: self.up_frame = self.ball_pos[-1][1]
 
-        # Detect downward ball movement
         if self.up and not self.down:
             self.down = detect_down(self.ball_pos, self.hoop_pos)
-            if self.down:
-                self.down_frame = self.ball_pos[-1][1]
+            if self.down: self.down_frame = self.ball_pos[-1][1]
 
-        # Detect peak frame in ball trajectory
-        if self.up and not self.peak:
-            self.peak = self.detect_peak(self.ball_pos)
-            if self.peak:
-                self.peak_frame = self.ball_pos[-1][1]
-
-        # When shot attempt is complete
-        if self.up and self.down and self.up_frame < self.down_frame:
+        if self.up and self.down and hasattr(self, 'up_frame') and hasattr(self,
+                                                                           'down_frame') and self.up_frame < self.down_frame:
             self.attempts += 1
-            self.up = False
-            self.down = False
-
+            result = "Failed"
             if score(self.ball_pos, self.hoop_pos):
                 self.makes += 1
-                self.overlay_color = (0, 255, 0)  # Green overlay for success
-                self.fade_counter = self.fade_frames
+                self.overlay_color = (0, 255, 0)
                 result = "Successful"
             else:
-                self.overlay_color = (0, 0, 255)  # Red overlay for fail
-                self.fade_counter = self.fade_frames
-                result = "Failed"
+                self.overlay_color = (0, 0, 255)
 
+            self.fade_counter = self.fade_frames
             ball_center = self.ball_pos[-1][0]
             hoop_center = self.hoop_pos[-1][0]
-            current_score = f"{self.makes} / {self.attempts}"
-            video_timing_seconds = self.frame_count / self.fps
+            score_text = f"{self.makes} / {self.attempts}"
+            timestamp = self.frame_count / self.video_fps
+            print(f"Shot #{self.attempts} detected at {timestamp:.2f}s. Result: {result}")
+            self.csv_writer.writerow([
+                self.attempts, result, ball_center,
+                hoop_center, score_text, f"{timestamp:.2f}"
+            ])
 
-            print(f"Shot {self.attempts} detected: {result}")
-            self.csv_writer.writerow([self.attempts, result, ball_center,
-                                      hoop_center, current_score, video_timing_seconds])
+            self.up = self.down = False
 
-    def display_score(self):
+    def display_score(self, frame):
         text = f"{self.makes} / {self.attempts}"
-        cv2.putText(self.frame, text, (50, 125), cv2.FONT_HERSHEY_SIMPLEX, 3, (255, 255, 255), 6)
-        cv2.putText(self.frame, text, (50, 125), cv2.FONT_HERSHEY_SIMPLEX, 3, (0, 0, 0), 3)
+        cv2.putText(frame, text, (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 3, (255, 255, 255), 6, cv2.LINE_AA)
+        cv2.putText(frame, text, (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 3, (0, 0, 0), 3, cv2.LINE_AA)
 
-        # Overlay fade effect for shot result feedback
         if self.fade_counter > 0:
-            alpha = 0.2 * (self.fade_counter / self.fade_frames)
-            overlay = np.full_like(self.frame, self.overlay_color)
-            self.frame = cv2.addWeighted(self.frame, 1 - alpha, overlay, alpha, 0)
+            alpha = 0.3 * (self.fade_counter / self.fade_frames)
+            overlay = frame.copy()
+            cv2.rectangle(overlay, (0, 0), (self.target_width, self.target_height), self.overlay_color, -1)
+            cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
             self.fade_counter -= 1
+
+    def cleanup(self):
+        self.cap.release()
+        cv2.destroyAllWindows()
+        self.csv_file.close()
+        print("Processing finished and resources released.")
 
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Shot detection using YOLO and screen capture by process name")
-    parser.add_argument('--model', type=str, required=True, default="models/Rishit.pt", help="Path to YOLO model file")
-    parser.add_argument('--process', type=str, required=True, default="nba2k11.exe", help="Process name of target window")
+    parser = argparse.ArgumentParser(
+        description="Basketball shot detector for prerecorded videos. Assumes videos are in 'HoopVids/' and models are in 'models/'."
+    )
+    parser.add_argument('--model', type=str, required=True,
+                        help="Filename of the YOLO model (e.g., 'Rishit.onnx')")
+    parser.add_argument('--video', type=str, required=True,
+                        help="Filename of the input video (e.g., 'my_gameplay.mp4')")
     args = parser.parse_args()
 
-    ShotDetector(model_path=args.model, process_name=args.process, model_name=os.path.splitext(os.path.basename(args.model))[0])
+    try:
+        detector = ShotDetector(
+            model_name=args.model,
+            video_name=args.video
+        )
+    except (IOError, Exception) as e:
+        print(f"An error occurred: {e}")

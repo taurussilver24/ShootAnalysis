@@ -11,7 +11,7 @@ from utils import score, detect_down, detect_up, in_hoop_region, clean_hoop_pos,
 class ShotDetector:
     def __init__(self, model_path, video_name, model_name):
         # Model initialization with accuracy-focused settings
-        self.model = YOLO(model_path)
+        self.model = YOLO(model_path, task="detect")
         # self.model.fuse()  #wont work with .onnx
         self.class_names = ['Ring', 'Ball']
 

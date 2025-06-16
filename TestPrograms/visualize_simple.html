@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>2.5D Shot Visualizer</title>
+    <style>
+        body { font-family: system-ui, sans-serif; background-color: #1e1e1e; color: #f0f0f0; display: flex; flex-direction: column; align-items: center; margin: 0; padding-top: 20px; }
+        h1 { color: #c5cae9; }
+        canvas { background: #282a36; border: 2px solid #c5cae9; }
+        .controls { margin: 15px; display: flex; gap: 15px; align-items: center; justify-content: center;}
+        button, label { padding: 8px 16px; background-color: #c5cae9; color: #1e1e1e; border: none; cursor: pointer; font-size: 14px; border-radius: 5px; font-weight: bold; }
+        button:hover, label:hover { background-color: #9fa8da; }
+        input[type="file"] { display: none; }
+        .info { font-size: 18px; text-align: center; height: 25px; min-width: 250px; }
+    </style>
+</head>
+<body>
+    <h1>2.5D Shot Visualizer</h1>
+    <canvas id="shotCanvas" width="960" height="540"></canvas>
+    <div class="controls">
+        <label id="file-loader-btn" for="file-loader">Load Data</label>
+        <input type="file" id="file-loader">
+        <button id="prev-shot">◀ Prev Shot</button>
+        <span id="shot-info" class="info">Load Data to Start</span>
+        <button id="next-shot">Next Shot ▶</button>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('shotCanvas');
+        const ctx = canvas.getContext('2d');
+        const fileLoader = document.getElementById('file-loader');
+        const shotInfo = document.getElementById('shot-info');
+
+        let data = null;
+        let currentShotIndex = 0;
+
+        fileLoader.addEventListener('change', loadData);
+        document.getElementById('file-loader-btn').addEventListener('click', () => fileLoader.click());
+        document.getElementById('prev-shot').addEventListener('click', () => changeShot(-1));
+        document.getElementById('next-shot').addEventListener('click', () => changeShot(1));
+
+        function loadData(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    data = JSON.parse(e.target.result);
+                    currentShotIndex = 0;
+                    draw();
+                } catch (error) { alert("Error parsing JSON file: " + error); }
+            };
+            reader.readAsText(file);
+        }
+
+        function changeShot(direction) {
+            if (!data || !data.shots.length) return;
+            currentShotIndex = (currentShotIndex + direction + data.shots.length) % data.shots.length;
+            draw();
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            const centerX = canvas.width / 2;
+            const centerY = canvas.height / 2;
+
+            if (!data || !data.shots.length) {
+                shotInfo.textContent = "Load Data to Start";
+                return;
+            }
+
+            const shot = data.shots[currentShotIndex];
+            shotInfo.textContent = `Shot ${shot.id} - Result: ${shot.result}`;
+            const resultColor = shot.result === "Successful" ? "#00E676" : "#FF5252";
+
+            // --- Draw Hoop (2.5D) ---
+            const hoopWidth = shot.hoop_size * 1.5; // Scale size for visibility
+            ctx.fillStyle = '#FFAB40'; // Orange
+            ctx.fillRect(centerX - hoopWidth / 2, centerY, hoopWidth, 8);
+
+            // --- Draw Ball (2.5D) ---
+            const ballRadius = shot.ball_size * 0.4; // Scale size for visibility
+            const ballX = centerX + shot.ball_relative_pos.x;
+            const ballY = centerY + shot.ball_relative_pos.y;
+
+            ctx.beginPath();
+            ctx.arc(ballX, ballY, ballRadius, 0, 2 * Math.PI);
+            ctx.fillStyle = resultColor;
+            ctx.fill();
+
+            // --- Draw Line Connecting Them ---
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([5, 5]); // Make the line dashed
+            ctx.beginPath();
+            ctx.moveTo(ballX, ballY);
+            ctx.lineTo(centerX, centerY);
+            ctx.stroke();
+            ctx.setLineDash([]); // Reset line dash
+        }
+
+        draw();
+    </script>
+</body>
+</html>

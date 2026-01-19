@@ -179,8 +179,8 @@ class ShotDetector:
 
 if __name__ == "__main__":
     # Create a dummy utils.py if it doesn't exist
-    if not os.path.exists('../Programs/utils.py'):
-        with open('../Programs/utils.py', 'w') as f:
+    if not os.path.exists('utils.py'):
+        with open('utils.py', 'w') as f:
             f.write("""
 def score(ball, hoop): return True
 def detect_up(ball, hoop): return len(ball) > 5

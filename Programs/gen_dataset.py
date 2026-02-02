@@ -1,48 +1,53 @@
-# INPUT_FOLDER = r"C:\Users\Rishit\PycharmProjects\ShootAnalysis\HoopVids\NBA2k"  # Folder with your MP4s
-
-
 import os
 import cv2
 import glob
 import numpy as np
 from tqdm import tqdm
 from ultralytics import YOLO
-from utils import in_hoop_region, clean_hoop_pos
+from utils import score, detect_down, detect_up, in_hoop_region, clean_hoop_pos, clean_ball_pos
 
 # ==============================================================================
-# ⚙️ DATASET FACTORY SETTINGS
+# ⚙️ DUAL FACTORY SETTINGS
 # ==============================================================================
-INPUT_FOLDER = r"C:\Users\Rishit\PycharmProjects\ShootAnalysis\HoopVids\NBA2k"  # Folder with your MP4s
-
-OUTPUT_DATASET = "NBA2K_Thesis_Dataset"
+INPUT_FOLDER = r"C:\Users\Rishit\Videos\NBA2K_Raw"
+OUTPUT_ROOT = "NBA2K_Thesis_Master_Dataset"
 MODEL_PATH = "../models/Rishit.onnx"
 
-SAVE_EVERY_N_FRAMES = 15
-CONF_STRICT = 0.60
-CONF_RELAXED = 0.15
-BATCH_SIZE = 16
+# SAMPLING RATES
+GENERAL_SAVE_RATE = 45  # Save 1 frame every ~0.75s (Dribbling/Walking)
+SHOT_SAVE_RATE = 3  # Save 1 frame every ~0.05s (High density during shots)
+
+CONF_STRICT = 0.60  # Ring
+CONF_RELAXED = 0.15  # Ball
+BATCH_SIZE = 24  # High batch for RTX 4080 / RX 6800
 
 
 # ==============================================================================
 
-class DatasetGenerator:
+class DualDatasetGenerator:
     def __init__(self, input_folder, output_root, model_path):
         self.input_folder = input_folder
         self.model = YOLO(model_path, task="detect")
         self.class_names = {0: 'Ring', 1: 'Ball'}
 
-        self.images_dir = os.path.join(output_root, "images")
-        self.labels_dir = os.path.join(output_root, "labels")
-        os.makedirs(self.images_dir, exist_ok=True)
-        os.makedirs(self.labels_dir, exist_ok=True)
+        # Setup Dual Directories
+        self.path_gen_img = os.path.join(output_root, "Dataset_1_General", "images")
+        self.path_gen_lbl = os.path.join(output_root, "Dataset_1_General", "labels")
+        self.path_shot_img = os.path.join(output_root, "Dataset_2_Shots", "images")
+        self.path_shot_lbl = os.path.join(output_root, "Dataset_2_Shots", "labels")
 
-        self.total_images_saved = 0
+        for p in [self.path_gen_img, self.path_gen_lbl, self.path_shot_img, self.path_shot_lbl]:
+            os.makedirs(p, exist_ok=True)
+
+        self.stats_general = 0
+        self.stats_shots = 0
 
     def run(self):
         video_files = glob.glob(os.path.join(self.input_folder, "*.mp4"))
-        print(f"=== 🏭 DATASET FACTORY STARTED ===")
-        print(f"   📂 Input: {len(video_files)} videos found")
-        print(f"   💾 Output: {self.images_dir}")
+        print(f"=== 🏭 DUAL DATASET FACTORY STARTED ===")
+        print(f"   📂 Input: {len(video_files)} videos")
+        print(f"   💾 General: {self.path_gen_img}")
+        print(f"   💾 Shots:   {self.path_shot_img}")
 
         for video_path in video_files:
             try:
@@ -52,7 +57,8 @@ class DatasetGenerator:
                 continue
 
         print(f"\n✅ GENERATION COMPLETE!")
-        print(f"   Total Images: {self.total_images_saved}")
+        print(f"   General Images: {self.stats_general}")
+        print(f"   Shot Images:    {self.stats_shots}")
 
     def process_video(self, video_path):
         video_name = os.path.splitext(os.path.basename(video_path))[0]
@@ -61,11 +67,15 @@ class DatasetGenerator:
 
         print(f"\nProcessing: {video_name} ({total_frames} frames)")
 
-        batch_frames = []
-        batch_indices = []
+        # Buffers
+        frame_batch = []  # Resized frames for AI
+        raw_batch = []  # Original frames for saving
+        indices_batch = []  # Frame numbers
 
-        # Stores full tuple: (center_xy, frame_idx, width, height, conf)
-        known_hoop_pos = []
+        # State History (Needed for Physics)
+        self.ball_pos = []
+        self.hoop_pos = []
+        self.up = self.down = False
 
         pbar = tqdm(total=total_frames, unit="frames")
         frame_idx = 0
@@ -73,18 +83,21 @@ class DatasetGenerator:
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret:
-                if batch_frames: self.process_batch(batch_frames, batch_indices, video_name, known_hoop_pos)
+                if frame_batch: self.process_batch(frame_batch, raw_batch, indices_batch, video_name)
                 break
 
-            if frame_idx % SAVE_EVERY_N_FRAMES == 0:
-                ai_frame = cv2.resize(frame, (1280, 736))
-                batch_frames.append(ai_frame)
-                batch_indices.append(frame_idx)
+            # AI Input (Resize for speed)
+            ai_frame = cv2.resize(frame, (1280, 736))
 
-                if len(batch_frames) == BATCH_SIZE:
-                    self.process_batch(batch_frames, batch_indices, video_name, known_hoop_pos)
-                    batch_frames = []
-                    batch_indices = []
+            frame_batch.append(ai_frame)
+            raw_batch.append(frame)
+            indices_batch.append(frame_idx)
+
+            if len(frame_batch) == BATCH_SIZE:
+                self.process_batch(frame_batch, raw_batch, indices_batch, video_name)
+                frame_batch = []
+                raw_batch = []
+                indices_batch = []
 
             frame_idx += 1
             pbar.update(1)
@@ -92,13 +105,14 @@ class DatasetGenerator:
         cap.release()
         pbar.close()
 
-    def process_batch(self, frames, indices, video_name, known_hoop_pos):
-        results = self.model(frames, stream=False, verbose=False, device='0', conf=CONF_RELAXED)
+    def process_batch(self, ai_frames, raw_frames, indices, video_name):
+        # 1. INFERENCE (Every frame)
+        results = self.model(ai_frames, stream=False, verbose=False, device='0', conf=CONF_RELAXED)
 
         for i, r in enumerate(results):
-            frame_idx = indices[i]
-            frame_img = frames[i]
+            current_idx = indices[i]
 
+            # --- DATA EXTRACTION ---
             label_lines = []
             boxes = r.boxes.cpu().numpy()
 
@@ -110,67 +124,103 @@ class DatasetGenerator:
                 conf = box.conf[0]
                 cls = int(box.cls[0])
 
-                # Store normalized sizes for label, but pixels for logic logic
-                if cls == 0:  # Ring
-                    rings.append({
-                        'line': f"{cls} {x:.6f} {y:.6f} {w:.6f} {h:.6f}",
-                        'conf': conf,
-                        'pos': (x, y),
-                        'size': (w, h)  # Needed for pixel conversion
-                    })
-                elif cls == 1:  # Ball
-                    balls.append({
-                        'line': f"{cls} {x:.6f} {y:.6f} {w:.6f} {h:.6f}",
-                        'conf': conf,
-                        'pos': (x, y)
-                    })
+                if cls == 0:
+                    rings.append(
+                        {'line': f"{cls} {x:.6f} {y:.6f} {w:.6f} {h:.6f}", 'conf': conf, 'pos': (x, y), 'size': (w, h)})
+                elif cls == 1:
+                    balls.append({'line': f"{cls} {x:.6f} {y:.6f} {w:.6f} {h:.6f}", 'conf': conf, 'pos': (x, y)})
 
-            # --- LOGIC FIX ---
-
-            # 1. Update Known Ring Positions (With WIDTH/HEIGHT now!)
+            # --- PHYSICS UPDATE ---
+            # 1. Update Hoop History
             current_rings = [r for r in rings if r['conf'] > CONF_STRICT]
             if current_rings:
                 for r in current_rings:
-                    label_lines.append(r['line'])
+                    c_px = (r['pos'][0] * 1280, r['pos'][1] * 736)
+                    w_px, h_px = r['size'][0] * 1280, r['size'][1] * 736
+                    self.hoop_pos.append((c_px, current_idx, w_px, h_px, r['conf']))
 
-                    # Convert normalized to pixels for utils.py compatibility
-                    center_px = (r['pos'][0] * 1280, r['pos'][1] * 736)
-                    w_px = r['size'][0] * 1280
-                    h_px = r['size'][1] * 736
+            # 2. Update Ball History (Best Ball Only)
+            best_ball = None
+            if balls:
+                # Get highest confidence ball that makes sense
+                candidates = []
+                for b in balls:
+                    b_px = (b['pos'][0] * 1280, b['pos'][1] * 736)
+                    # Context Check
+                    if b['conf'] > 0.50:
+                        candidates.append(b)
+                    elif self.hoop_pos and in_hoop_region(b_px, self.hoop_pos):
+                        candidates.append(b)
 
-                    # APPEND FULL TUPLE (Fixes the IndexError)
-                    # Structure: ( (x,y), frame, width, height, conf )
-                    known_hoop_pos.append((center_px, frame_idx, w_px, h_px, r['conf']))
+                if candidates:
+                    best_ball = max(candidates, key=lambda x: x['conf'])
+                    b_px = (best_ball['pos'][0] * 1280, best_ball['pos'][1] * 736)
+                    self.ball_pos.append((b_px, current_idx, 0, 0, best_ball['conf']))
 
-            # 2. Filter Balls
-            for b in balls:
-                is_high_conf = b['conf'] > 0.50
+            # 3. Clean History
+            self.ball_pos = clean_ball_pos(self.ball_pos, current_idx)
+            if self.hoop_pos: self.hoop_pos = clean_hoop_pos(self.hoop_pos)
 
-                b_pixel = (b['pos'][0] * 1280, b['pos'][1] * 736)
+            # 4. Check Shot State
+            is_shooting = False
+            if self.hoop_pos and self.ball_pos:
+                if not self.up: self.up = detect_up(self.ball_pos, self.hoop_pos)
+                if self.up: is_shooting = True  # Ball is going up!
 
-                # Safe check: in_hoop_region usually needs a populated list
-                is_near_hoop = False
-                if known_hoop_pos:
-                    try:
-                        is_near_hoop = in_hoop_region(b_pixel, known_hoop_pos)
-                    except Exception:
-                        is_near_hoop = False  # Fallback if utils logic fails strictly
+                if self.up and not self.down: self.down = detect_down(self.ball_pos, self.hoop_pos)
+                if self.down: is_shooting = True  # Ball is going down!
 
-                if is_high_conf or (b['conf'] > CONF_RELAXED and is_near_hoop):
-                    label_lines.append(b['line'])
+                # Reset logic (End of shot)
+                if self.up and self.down:
+                    # We keep is_shooting = True for this frame, then reset
+                    if score(self.ball_pos, self.hoop_pos) or not score(self.ball_pos, self.hoop_pos):
+                        self.up = self.down = False
 
-            # --- SAVE ---
-            if label_lines:
-                filename = f"{video_name}_{frame_idx:06d}"
-                img_path = os.path.join(self.images_dir, f"{filename}.jpg")
-                cv2.imwrite(img_path, frame_img)
+            # --- SAVING LOGIC (The Dual Sorter) ---
+            found_ring = len(current_rings) > 0
+            found_ball = best_ball is not None
 
-                lbl_path = os.path.join(self.labels_dir, f"{filename}.txt")
+            # Prepare Label Text
+            final_labels = []
+            if found_ring:
+                for r in current_rings: final_labels.append(r['line'])
+            if found_ball:
+                final_labels.append(best_ball['line'])
+
+            # DECISION TREE
+            save_target = None
+
+            if found_ring and found_ball:
+                if is_shooting:
+                    # Condition: Active Shot -> Save frequently
+                    if current_idx % SHOT_SAVE_RATE == 0:
+                        save_target = "SHOT"
+                else:
+                    # Condition: Just dribbling -> Save rarely
+                    if current_idx % GENERAL_SAVE_RATE == 0:
+                        save_target = "GENERAL"
+
+            # WRITE TO DISK
+            if save_target:
+                filename = f"{video_name}_{current_idx:06d}"
+
+                if save_target == "SHOT":
+                    img_path = os.path.join(self.path_shot_img, f"{filename}.jpg")
+                    lbl_path = os.path.join(self.path_shot_lbl, f"{filename}.txt")
+                    self.stats_shots += 1
+                else:
+                    img_path = os.path.join(self.path_gen_img, f"{filename}.jpg")
+                    lbl_path = os.path.join(self.path_gen_lbl, f"{filename}.txt")
+                    self.stats_general += 1
+
+                # Save (Use raw frame for quality, but resize if you want smaller dataset size)
+                # We save the AI-resized frame (1280x736) to match the normalized labels perfectly
+                # and keep dataset size manageable.
+                cv2.imwrite(img_path, ai_frames[i])
+
                 with open(lbl_path, 'w') as f:
-                    f.write('\n'.join(label_lines))
-
-                self.total_images_saved += 1
+                    f.write('\n'.join(final_labels))
 
 
 if __name__ == "__main__":
-    DatasetGenerator(INPUT_FOLDER, OUTPUT_DATASET, MODEL_PATH).run()
+    DualDatasetGenerator(INPUT_FOLDER, OUTPUT_ROOT, MODEL_PATH).run()

@@ -1,265 +1,191 @@
 import os
 import cv2
-import cvzone
-import numpy as np
 import csv
 import time
+import numpy as np
 from ultralytics import YOLO
-# Assuming your 'utils.py' file is in the same directory or accessible
 from utils import score, detect_down, detect_up, in_hoop_region, clean_hoop_pos, clean_ball_pos
-import argparse
+
+# ==============================================================================
+# ⚙️ MINIMAL SETTINGS
+# ==============================================================================
+VIDEO_PATH = "../HoopVids/Done_Requested/SpaceJam.mp4"
+MODEL_PATH = "../models/Rishit.onnx"
+SESSION_NAME = "Minimal_Session"
+
+# OPTIMIZATION
+# 1 = Smooth playback (slower), 3 = Turbo (choppy but fast)
+# Note: The script automatically switches to 1 during a flash so you see the result!
+NORMAL_SKIP_RATE = 2
+HISTORY_LEN = 60  # Keep 1 sec of physics history
 
 
-class ShotDetector:
-    def __init__(self, model_name, video_name):
-        """
-        Initializes the shot detector using only model and video filenames.
-        Paths are constructed automatically.
-        """
-        # --- Path Construction ---
-        self.model_path = os.path.join("models", model_name)
-        self.video_path = os.path.join("HoopVids", video_name)
-        video_basename = os.path.splitext(video_name)[0]
-        model_basename = os.path.splitext(model_name)[0]
+# ==============================================================================
 
-        # Model initialization
-        self.model = YOLO(self.model_path, task="detect")
-        self.class_names = ['Ring', 'Ball']
+class MinimalShotDetector:
+    def __init__(self, video_path, model_path, session_name):
+        self.model = YOLO(model_path, task="detect")
+        self.cap = cv2.VideoCapture(video_path)
 
-        # --- Define Model Input Size (Corrected) ---
-        # We use dimensions that are a multiple of 32 to prevent warnings
-        self.model_input_width = 1280
-        self.model_input_height = 736  # <--- CHANGE: Was 720, now 736 to match stride 32
-
-        # Video capture setup
-        self.cap = cv2.VideoCapture(self.video_path)
         if not self.cap.isOpened():
-            raise IOError(f"Error opening video file: {self.video_path}")
+            print(f"❌ Error: Could not open {video_path}")
+            return
 
-        # Define Original Video Size
-        self.target_width = 1920
-        self.target_height = 1080
-        self.video_fps = self.cap.get(cv2.CAP_PROP_FPS)
-        if self.video_fps == 0: self.video_fps = 60
-
-        # --- FPS Counter Initialization ---
-        self.fps_start_time = time.time()
-        self.fps_frame_count = 0
-        self.display_fps = 0
-
-        # Detection buffers and state
-        self.frame_count = 0
+        # Setup Stats
         self.ball_pos = []
         self.hoop_pos = []
         self.makes = 0
         self.attempts = 0
-        self.up = False
-        self.down = False
-        self.peak = False
+        self.up = self.down = self.peak = False
 
-        # UI elements
-        self.fade_frames = 20
+        # Flash Logic
+        self.fade_frames = 15
         self.fade_counter = 0
         self.overlay_color = (0, 0, 0)
+        self.overlay_buffer = None  # Pre-allocate memory
 
-        # --- Results Logging Setup ---
-        results_dir = os.path.join('Results', video_basename)
-        os.makedirs(results_dir, exist_ok=True)
-        csv_path = os.path.join(results_dir, f'{model_basename}_shot_results.csv')
-        self.csv_file = open(csv_path, mode='w', newline='')
-        self.csv_writer = csv.writer(self.csv_file)
-        self.csv_writer.writerow([
-            "Shot Taken", "Result", "Ball Coordinates",
-            "Hoop Coordinates", "Current Score", "Video Timing (seconds)"
-        ])
-
-        # Window setup
-        self.window_name = f"MODEL: {model_name} | VIDEO: {video_name}"
+        # Window
+        self.window_name = "MINIMAL DETECTOR"
         cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(self.window_name, 1280, 720)  # Set a large initial window size
-        cv2.createTrackbar('Pause', self.window_name, 0, 1, self.on_pause_trackbar_change)
-        self.paused = False
+        cv2.resizeWindow(self.window_name, 1280, 720)
 
+        self.frame_idx = 0
+        self.paused = False
         self.run()
 
-    def on_pause_trackbar_change(self, pos):
-        self.paused = bool(pos)
-
     def run(self):
+        print("=== MINIMAL MODE STARTED ===")
+        print("   -> Only Boxes & Flashes")
+
         while self.cap.isOpened():
             if not self.paused:
                 ret, frame = self.cap.read()
-                if not ret:
-                    print("End of video reached.")
-                    break
+                if not ret: break
 
-                # Ensure original frame is 1080p for display
-                if frame.shape[1] != self.target_width or frame.shape[0] != self.target_height:
-                    frame = cv2.resize(frame, (self.target_width, self.target_height))
+                # 1. LOGIC (Always Run)
+                self.process_logic(frame)
 
-                self.process_frame(frame)
+                # 2. RENDER DECISION
+                # We draw if:
+                # a) It's a "Render Frame" (based on skip rate)
+                # b) A Flash is happening (We NEVER skip flash frames)
+                should_render = (self.frame_idx % NORMAL_SKIP_RATE == 0) or (self.fade_counter > 0)
 
-                # Calculate and display FPS and Resolution
-                self.update_fps()
-                self.draw_debug_info(frame)
+                if should_render:
+                    self.draw_visuals(frame)
+                    cv2.imshow(self.window_name, frame)
 
-            cv2.imshow(self.window_name, frame)
+                    key = cv2.waitKey(1) & 0xFF
+                    if key == ord('q'):
+                        break
+                    elif key == ord(' '):
+                        self.paused = not self.paused
 
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord('q'):
-                break
-            elif key == ord(' '):
-                self.paused = not self.paused
-                cv2.setTrackbarPos('Pause', self.window_name, int(self.paused))
+                self.frame_idx += 1
+            else:
+                if cv2.waitKey(100) & 0xFF == ord(' '): self.paused = not self.paused
 
-        self.cleanup()
+        self.cap.release()
+        cv2.destroyAllWindows()
 
-    def draw_debug_info(self, frame):
-        """Draws FPS and resolution text on the top-left of the frame."""
-        # Define style
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = 0.9
-        color = (0, 255, 0)
-        thickness = 2
-        bg_color = (0, 0, 0)
+    def process_logic(self, frame):
+        # Truncate History (Speed)
+        if len(self.ball_pos) > HISTORY_LEN: self.ball_pos = self.ball_pos[-HISTORY_LEN:]
+        if len(self.hoop_pos) > HISTORY_LEN: self.hoop_pos = self.hoop_pos[-HISTORY_LEN:]
 
-        # Draw FPS
-        fps_text = f"Processing FPS: {self.display_fps:.2f}"
-        cv2.putText(frame, fps_text, (15, 35), font, font_scale, bg_color, thickness + 1, cv2.LINE_AA)
-        cv2.putText(frame, fps_text, (15, 35), font, font_scale, color, thickness, cv2.LINE_AA)
-
-        # Draw Resolution to prove it's Full HD
-        res_text = f"Display: {self.target_width}x{self.target_height}"
-        cv2.putText(frame, res_text, (15, 70), font, font_scale, bg_color, thickness + 1, cv2.LINE_AA)
-        cv2.putText(frame, res_text, (15, 70), font, font_scale, color, thickness, cv2.LINE_AA)
-
-    def update_fps(self):
-        """Calculates the processing frames per second."""
-        self.fps_frame_count += 1
-        elapsed_time = time.time() - self.fps_start_time
-        # Update every second
-        if elapsed_time > 1.0:
-            self.display_fps = self.fps_frame_count / elapsed_time
-            self.fps_frame_count = 0
-            self.fps_start_time = time.time()
-
-    def process_frame(self, frame):
-        # Resize the full HD frame to the size the model expects (736x1280)
-        model_frame = cv2.resize(frame, (self.model_input_width, self.model_input_height))
-
-        # Run detection on the resized frame
+        # Inference
         results = self.model(
-            model_frame,
+            frame,
             stream=True,
             verbose=False,
-            imgsz=(self.model_input_height, self.model_input_width),
-            half=True, device='0', conf=0.75
+            imgsz=1280,
+            rect=True,  # Speed Optimization
+            half=False,
+            conf=0.50
         )
-
-        # Calculate scaling factors to map coordinates back to the original frame
-        scale_x = self.target_width / self.model_input_width
-        scale_y = self.target_height / self.model_input_height
 
         for r in results:
             boxes = r.boxes.cpu().numpy()
             for box in boxes:
-                x1, y1, x2, y2 = box.xyxy[0]
-                x1_orig, y1_orig = int(x1 * scale_x), int(y1 * scale_y)
-                x2_orig, y2_orig = int(x2 * scale_x), int(y2 * scale_y)
-
-                w_orig, h_orig = x2_orig - x1_orig, y2_orig - y1_orig
-                conf = round(box.conf[0].item(), 2)
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
+                conf = box.conf[0]
                 cls = int(box.cls[0])
-                current_class = self.class_names[cls]
-                center_orig = (x1_orig + w_orig // 2, y1_orig + h_orig // 2)
 
-                color = (0, 0, 255) if current_class == "Ball" else (255, 0, 0)
-                cv2.rectangle(frame, (x1_orig, y1_orig), (x2_orig, y2_orig), color, 2)
+                center = ((x1 + x2) // 2, (y1 + y2) // 2)
+                w, h = x2 - x1, y2 - y1
 
-                if current_class == "Ball":
-                    self.ball_pos.append((center_orig, self.frame_count, w_orig, h_orig, conf))
-                elif current_class == "Ring":
-                    self.hoop_pos.append((center_orig, self.frame_count, w_orig, h_orig, conf))
+                # Just store data, don't draw yet
+                if cls == 1:  # Ball
+                    self.ball_pos.append((center, self.frame_idx, w, h, conf))
+                elif cls == 0:  # Ring
+                    self.hoop_pos.append((center, self.frame_idx, w, h, conf))
 
-        self.clean_motion(frame)
-        self.shot_detection()
-        self.display_score(frame)
-        self.frame_count += 1
+                    # Store box coordinates for drawing later
+                    # We sneak this into the list so draw_visuals can find it
+                    # (Quick hack to avoid a separate list)
+                    self.hoop_pos[-1] = (center, self.frame_idx, w, h, conf, (x1, y1, x2, y2))
 
-    def clean_motion(self, frame):
-        self.ball_pos = clean_ball_pos(self.ball_pos, self.frame_count)
+                if cls == 1:  # Update ball box too
+                    self.ball_pos[-1] = (center, self.frame_idx, w, h, conf, (x1, y1, x2, y2))
+
+        # Physics Pipeline
+        self.ball_pos = clean_ball_pos(self.ball_pos, self.frame_idx)
+        if self.hoop_pos: self.hoop_pos = clean_hoop_pos(self.hoop_pos)
+
+        if self.hoop_pos and self.ball_pos:
+            if not self.up: self.up = detect_up(self.ball_pos, self.hoop_pos)
+            if self.up and not self.down: self.down = detect_down(self.ball_pos, self.hoop_pos)
+
+            if self.up and not self.peak and len(self.ball_pos) > 2:
+                if self.ball_pos[-1][0][1] > self.ball_pos[-2][0][1]: self.peak = True
+
+            if self.up and self.down and self.peak:
+                self.attempts += 1
+                if score(self.ball_pos, self.hoop_pos):
+                    self.makes += 1
+                    self.overlay_color = (0, 255, 0)  # GREEN
+                    print(f"[{self.frame_idx}] SCORE! ({self.makes}/{self.attempts})")
+                else:
+                    self.overlay_color = (0, 0, 255)  # RED
+                    print(f"[{self.frame_idx}] MISS. ({self.makes}/{self.attempts})")
+
+                # Trigger Flash
+                self.fade_counter = self.fade_frames
+
+                # Reset
+                self.up = self.down = self.peak = False
+
+    def draw_visuals(self, frame):
+        # 1. Draw Boxes (Only latest frame)
+        # We look at the last item in our lists to get current coords
+        if self.ball_pos:
+            data = self.ball_pos[-1]
+            if len(data) >= 6 and data[1] == self.frame_idx:  # Check if updated this frame
+                x1, y1, x2, y2 = data[5]
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)  # Red Box
+
         if self.hoop_pos:
-            self.hoop_pos = clean_hoop_pos(self.hoop_pos)
-            cv2.circle(frame, self.hoop_pos[-1][0], 5, (0, 255, 255), -1)
+            data = self.hoop_pos[-1]
+            if len(data) >= 6 and data[1] == self.frame_idx:
+                x1, y1, x2, y2 = data[5]
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)  # Blue Box
 
-    def shot_detection(self):
-        if not self.hoop_pos or not self.ball_pos: return
-
-        if not self.up:
-            self.up = detect_up(self.ball_pos, self.hoop_pos)
-            if self.up: self.up_frame = self.ball_pos[-1][1]
-
-        if self.up and not self.down:
-            self.down = detect_down(self.ball_pos, self.hoop_pos)
-            if self.down: self.down_frame = self.ball_pos[-1][1]
-
-        if self.up and self.down and hasattr(self, 'up_frame') and hasattr(self,
-                                                                           'down_frame') and self.up_frame < self.down_frame:
-            self.attempts += 1
-            result = "Failed"
-            if score(self.ball_pos, self.hoop_pos):
-                self.makes += 1
-                self.overlay_color = (0, 255, 0)
-                result = "Successful"
-            else:
-                self.overlay_color = (0, 0, 255)
-
-            self.fade_counter = self.fade_frames
-            ball_center = self.ball_pos[-1][0]
-            hoop_center = self.hoop_pos[-1][0]
-            score_text = f"{self.makes} / {self.attempts}"
-            timestamp = self.frame_count / self.video_fps
-            print(f"Shot #{self.attempts} detected at {timestamp:.2f}s. Result: {result}")
-            self.csv_writer.writerow([
-                self.attempts, result, ball_center,
-                hoop_center, score_text, f"{timestamp:.2f}"
-            ])
-
-            self.up = self.down = False
-
-    def display_score(self, frame):
-        text = f"{self.makes} / {self.attempts}"
-        cv2.putText(frame, text, (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 3, (255, 255, 255), 6, cv2.LINE_AA)
-        cv2.putText(frame, text, (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 3, (0, 0, 0), 3, cv2.LINE_AA)
-
+        # 2. Draw Flash
         if self.fade_counter > 0:
-            alpha = 0.3 * (self.fade_counter / self.fade_frames)
-            overlay = frame.copy()
-            cv2.rectangle(overlay, (0, 0), (self.target_width, self.target_height), self.overlay_color, -1)
-            cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
-            self.fade_counter -= 1
+            # Create overlay only once if needed (Optimization)
+            if self.overlay_buffer is None or self.overlay_buffer.shape != frame.shape:
+                self.overlay_buffer = np.zeros_like(frame)
 
-    def cleanup(self):
-        self.cap.release()
-        cv2.destroyAllWindows()
-        self.csv_file.close()
-        print("Processing finished and resources released.")
+            # Fill buffer with current color
+            self.overlay_buffer[:] = self.overlay_color
+
+            # Calculate alpha
+            alpha = 0.3 * (self.fade_counter / self.fade_frames)
+
+            # Blend
+            cv2.addWeighted(frame, 1 - alpha, self.overlay_buffer, alpha, 0, dst=frame)
+            self.fade_counter -= 1
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Basketball shot detector for prerecorded videos. Assumes videos are in 'HoopVids/' and models are in 'models/'."
-    )
-    parser.add_argument('--model', type=str, required=True,
-                        help="Filename of the YOLO model (e.g., 'Rishit.onnx')")
-    parser.add_argument('--video', type=str, required=True,
-                        help="Filename of the input video (e.g., 'my_gameplay.mp4')")
-    args = parser.parse_args()
-
-    try:
-        detector = ShotDetector(
-            model_name=args.model,
-            video_name=args.video
-        )
-    except (IOError, Exception) as e:
-        print(f"An error occurred: {e}")
+    MinimalShotDetector(VIDEO_PATH, MODEL_PATH, SESSION_NAME)

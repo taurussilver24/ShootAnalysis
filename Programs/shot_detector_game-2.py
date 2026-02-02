@@ -10,12 +10,11 @@ from utils import score, detect_down, detect_up, in_hoop_region, clean_hoop_pos,
 
 class ShotDetector:
     def __init__(self, model_path, video_name, model_name):
-        # Model initialization with accuracy-focused settings
+        # Model initialization
         self.model = YOLO(model_path, task="detect")
-        # self.model.fuse()  #wont work with .onnx
         self.class_names = ['Ring', 'Ball']
 
-        # Screen capture setup - ensure native 720p capture
+        # Screen capture setup
         self.target_width, self.target_height = 1920, 1080
         self.capture_region = (0, 0, self.target_width, self.target_height)
         self.camera = dxcam.create(
@@ -49,7 +48,7 @@ class ShotDetector:
         self.overlay_color = (0, 0, 0)
 
         # Results logging
-        results_dir = os.path.join('Results', video_name)
+        results_dir = os.path.join('../Results', video_name)
         os.makedirs(results_dir, exist_ok=True)
         csv_path = os.path.join(results_dir, f'{model_name}_shot_results.csv')
         self.csv_file = open(csv_path, mode='w', newline='')
@@ -79,11 +78,9 @@ class ShotDetector:
                     if frame is None:
                         continue
 
-                    # Verify and enforce 720p resolution
                     if frame.shape[0] != self.target_height or frame.shape[1] != self.target_width:
                         frame = cv2.resize(frame, (self.target_width, self.target_height))
 
-                    # Process frame at full resolution
                     self.process_frame(frame)
 
                     # Performance monitoring
@@ -92,7 +89,7 @@ class ShotDetector:
                     fps = 1.0 / time_elapsed
                     self.last_time = current_time
 
-                    # Display FPS for debugging
+                    # Display FPS
                     cv2.putText(frame, f"FPS: {fps:.1f}", (10, 30),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
@@ -100,7 +97,6 @@ class ShotDetector:
                     print(f"Error: {e}")
                     break
 
-                # Display frame
                 cv2.imshow(self.window_name, frame)
 
             # Key handling
@@ -117,23 +113,22 @@ class ShotDetector:
         self.camera.stop()
 
     def process_frame(self, frame):
-        # Run detection at FULL 720p resolution
+        # --- CRITICAL FIX: half=False ---
         results = self.model(
-            frame,  # Feed the full resolution frame
+            frame,
             stream=True,
             verbose=False,
-            imgsz=(720, 1280),  # Explicit 720p input size
-            half=True,  # FP16 acceleration if available
-            device='0',  # Use GPU
-            conf=0.75  # Slightly lower confidence threshold for better detection
+            imgsz=(736, 1280), # 720 -> 736 to satisfy stride 32 requirement
+            half=False,        # <--- CHANGED FROM TRUE
+            device='0',
+            conf=0.75
         )
 
-        # Process detections
         for r in results:
             boxes = r.boxes.cpu().numpy()
             for box in boxes:
                 x1, y1, x2, y2 = box.xyxy[0]
-                x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)  # No scaling needed
+                x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
                 w, h = x2 - x1, y2 - y1
                 conf = round(box.conf[0].item(), 2)
 
@@ -143,17 +138,14 @@ class ShotDetector:
                     center = (x1 + w // 2, y1 + h // 2)
                     color = (0, 0, 255) if current_class == "Ball" else (255, 0, 0)
 
-                    # Draw bounding box
                     cv2.rectangle(frame, (x1, y1), (x2, y2), color, 1)
 
-                    # Draw label
                     label = f"{current_class} {conf:.2f}"
                     (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
                     cv2.rectangle(frame, (x1, y1 - th - 5), (x1 + tw, y1), color, -1)
                     cv2.putText(frame, label, (x1, y1 - 5),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
-                    # Track positions
                     if (current_class == "Ball" and conf > 0.75) or (
                             in_hoop_region(center, self.hoop_pos) and conf > 0.15):
                         self.ball_pos.append((center, self.frame_count, w, h, conf))
@@ -163,7 +155,6 @@ class ShotDetector:
                         self.hoop_pos.append((center, self.frame_count, w, h, conf))
                         cvzone.cornerRect(frame, (x1, y1, w, h), colorR=color)
 
-        # Clean and analyze motion
         self.clean_motion(frame)
         self.shot_detection()
         self.display_score(frame)
@@ -230,7 +221,8 @@ class ShotDetector:
         if self.fade_counter > 0:
             alpha = 0.2 * (self.fade_counter / self.fade_frames)
             overlay = np.full_like(frame, self.overlay_color)
-            frame = cv2.addWeighted(frame, 1 - alpha, overlay, alpha, 0)
+            # Fix: Ensure overlay and frame match types
+            cv2.addWeighted(frame, 1 - alpha, overlay, alpha, 0, dst=frame)
             self.fade_counter -= 1
 
 
@@ -238,7 +230,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Optimized basketball shot detector")
-    parser.add_argument('--model', type=str, default="models/Rishit.onnx",
+    parser.add_argument('--model', type=str, default="../models/Rishit.onnx",
                         help="YOLO model path")
     parser.add_argument('--name', type=str, default="NBA2K25.exe",
                         help="Session name for results folder")
